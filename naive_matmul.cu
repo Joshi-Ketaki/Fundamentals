@@ -1,4 +1,4 @@
-%%writefile naive_matmul.cu
+// %%writefile naive_matmul.cu
 // !ncc naive_matmul.cu -o naive_matmul -arch=sm_75
 // !./naive_matmul 4 4 4 32
 #include <iostream>
@@ -30,15 +30,15 @@ __global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C) 
 }
 
 int main(int argc, char *argv[]) {
-  if (argc != 5) {
+  /*if (argc != 5) {
     cout << "Usage: " << argv[0] << " <M> <N> <K> <block_size>" << endl;
     return 1;
-  }
+  }*/
 
-  int M = atoi(argv[1]);
-  int N = atoi(argv[2]);
-  int K = atoi(argv[3]);
-  int block_size = atoi(argv[4]);
+  int M = 8; // atoi(argv[1]);
+  int N = 8; // atoi(argv[2]);
+  int K = 8; // atoi(argv[3]);
+  int block_size = 4; // atoi(argv[4]);
 
   float *A = new float[M * K];
   float *B = new float[K * N];
