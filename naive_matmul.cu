@@ -3,7 +3,9 @@
 // !./naive_matmul 4 4 4 32
 #include <iostream>
 #include <cuda_runtime.h>
+
 using namespace std;
+
 
 void matInit(float* D, int rowDim, int colDim, int val) {
   for (int i = 0; i < rowDim * colDim; i++) D[i] = val;
@@ -16,9 +18,9 @@ void dispMat(float* D, int M, int N) {
   }
 }
 
-__global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C) {
-  int row = blockIdx.y * blockDim.y + threadIdx.y;
-  int col = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
+  int row = blockIdx.y * block_size + (threadIdx.x / block_size);  //threadIdx.y;
+  int col = blockIdx.x * block_size + (threadIdx.x % block_size); //threadIdx.x;
 
   if (row < M && col < N) {
     float sum = 0.0f;
@@ -58,13 +60,13 @@ int main(int argc, char *argv[]) {
 
   // int grid_x = (N + block_size - 1) / block_size;
   // int grid_y = (M + block_size - 1) / block_size;
-  dim3 blockDim(block_size, block_size, 1);
+  dim3 blockDim(block_size * block_size, 1, 1);
   // dim3 gridDim(grid_x, grid_y, 1);
   dim3 gridDim((N + block_size - 1) / block_size,
              (M + block_size - 1) / block_size);
 
 
-  naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC);
+  naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
 
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess)
