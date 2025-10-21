@@ -6,11 +6,47 @@ Step 1 is to brush up and create a mental model of the GPU architecture. Create 
 We then start by understanding the basic operations: GEMM and performance implications for this.
 
 System details:
-Environment used: Google collab
-GPU used: Tesla T4
-Available GPU RAM for the slice provided by collab: 15 GB vidmem
-Available CPU RAM for the slice provided by collab: 12.7 GB
-Disk: 112.67 GB
+Environment used: LeetGPU cli. I am using cycle-accurate mode.
+LeetGPU is a simulator and not actual hardware. So hardware perf counters etc. is not supported.
+But I find this a good place to experiment as unlike collab and other platforms there is no limit to the usage hours.
+Downside is that we do not have access to nsight etc as this is a simulator. Also the support is a bit basic, for instance, command line does not support command line arguments.
 
-Module 1:
+
+GPU used: RTX 3070 (Ampere)
+
+
+
+Module 1: Understanding the fundamental DL operations from pov of GPU architecture.
+
 1. Naive matmul: The very basic GEMM operation. Non-optimized version.
+2. Tiled Matmul: Does matrix multiply using tiles.
+
+Results: Note the execution times. This is the only measurable metric in leetGPUs as of now.
+
+ketaki@Mac Fundamentals % leetgpu run tiled_matmul.cu --mode cycle-accurate --gpu NVIDIA RTX 3070
+Running NVIDIA RTX 3070 in CYCLE ACCURATE mode...
+Compiling...
+Executing...
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+GPU Execution Time: 6.12 microseconds
+Exit status: 0
+ketaki@Mac Fundamentals % leetgpu run naive_matmul.cu --mode cycle-accurate --gpu NVIDIA RTX 3070
+Running NVIDIA RTX 3070 in CYCLE ACCURATE mode...
+Compiling...
+Executing...
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+8 8 8 8 8 8 8 8 
+GPU Execution Time: 6.63 microseconds
