@@ -24,7 +24,7 @@ Module 1 (Look at branch module 1 for code): Understanding the fundamental DL op
 
 Results: Note the execution times. This is the only measurable metric in leetGPUs as of now.
 
-
+```
 ketaki@Mac Fundamentals % leetgpu run tiled_matmul.cu --mode cycle-accurate --gpu NVIDIA RTX 3070
 
 Running NVIDIA RTX 3070 in CYCLE ACCURATE mode...
@@ -53,5 +53,5 @@ Executing...
 8 8 8 8 8 8 8 8 
 8 8 8 8 8 8 8 8 
 GPU Execution Time: 6.63 microseconds
-
+```
 
