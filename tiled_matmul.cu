@@ -37,10 +37,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }*/
 
-  int M = 8; // atoi(argv[1]);
-  int N = 8; // atoi(argv[2]);
-  int K = 8; // atoi(argv[3]);
-  int block_size = 4; // atoi(argv[4]);
+  int M = 64; // atoi(argv[1]);
+  int N = 64; // atoi(argv[2]);
+  int K = 64; // atoi(argv[3]);
+  int block_size = 32; // atoi(argv[4]);
 
   float *A = new float[M * K];
   float *B = new float[K * N];
