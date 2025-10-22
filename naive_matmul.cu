@@ -21,8 +21,8 @@ void dispMat(float* D, int M, int N) {
 }
 
 __global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
-  int row = blockIdx.y * block_size + (threadIdx.x / block_size);  //threadIdx.y;
-  int col = blockIdx.x * block_size + (threadIdx.x % block_size); //threadIdx.x;
+  int row = blockIdx.y * block_size + threadIdx.y; //(threadIdx.x / block_size);  //threadIdx.y;
+  int col = blockIdx.x * block_size + threadIdx.x; //(threadIdx.x % block_size); //threadIdx.x;
   unsigned long long localFlops = 0, localBytes = 0;
   if (row < M && col < N) {
     float sum = 0.0f;
@@ -44,10 +44,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }*/
 
-  int M = 512; // atoi(argv[1]);
-  int N = 512; // atoi(argv[2]);
-  int K = 512; // atoi(argv[3]);
-  int block_size = 1024; // atoi(argv[4]);
+  int M = 64; // atoi(argv[1]);
+  int N = 64; // atoi(argv[2]);
+  int K = 64; // atoi(argv[3]);
+  int block_size = 32; // atoi(argv[4]);
 
   float *A = new float[M * K];
   float *B = new float[K * N];
@@ -71,7 +71,7 @@ int main(int argc, char *argv[]) {
 
   // int grid_x = (N + block_size - 1) / block_size;
   // int grid_y = (M + block_size - 1) / block_size;
-  dim3 blockDim(block_size * block_size, 1, 1);
+  dim3 blockDim(block_size, block_size, 1);
   // dim3 gridDim(grid_x, grid_y, 1);
   dim3 gridDim((N + block_size - 1) / block_size,
              (M + block_size - 1) / block_size);
@@ -104,11 +104,36 @@ int main(int argc, char *argv[]) {
       printf("Kernel execution error: %s\n", cudaGetErrorString(err));
  
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-  //dispMat(C, M, N);
+  // dispMat(C, M, N);
+
+  cout << "**** Occupancy Calculations ****" << endl;
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, 0);
+  int threadsPerBlock = blockDim.x * blockDim.y * blockDim.z;
+  cout << "Threads per block = " << threadsPerBlock << endl;
+  cout << "Device max threads per SM: " << prop.maxThreadsPerMultiProcessor << endl;
+  cout << "Device max threads per block: " << prop.maxThreadsPerBlock << endl;
+  cout << "Device SM count: " << prop.multiProcessorCount << endl;
+  // calc theoritical occupancy
+  int maxActiveBlocksPerSM = 0;
+  cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocksPerSM,
+                                                naive_matmul,
+                                                threadsPerBlock,
+                                                0);
+
+
+  // cudaDeviceProp prop;
+  // cudaGetDeviceProperties(&prop, 0);
+
+  cout << "\n (Theoretical) maxActiveBlocksPerSM = " << maxActiveBlocksPerSM << endl;
+  double occupancy = (double)(maxActiveBlocksPerSM * threadsPerBlock) /
+                   (double)prop.maxThreadsPerMultiProcessor * 100.00f;
+  cout << "\n Theoretical Occupancy = " << occupancy << "%" << endl;
+
 
   double ridgeIntensity = (peakPerf/peakBw);
   double arithIntensity = ((double)hostFlops/hostBytes);
-  cout << "**** Roofline Analysis ****"<< endl;
+  cout << "\n**** Roofline Analysis ****"<< endl;
   cout << "Total number of operations ="<< hostFlops << endl;
   cout << "Total number of bytes movement=" << hostBytes << endl;
   cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
@@ -121,7 +146,7 @@ int main(int argc, char *argv[]) {
 	cout << "The kernel is MEMORY-BOUND" << endl;
   else
  	cout << "The kernel is COMPUTE-BOUND" << endl;
-
+ 
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
   delete[] A;
