@@ -3,9 +3,11 @@
 // !./naive_matmul 4 4 4 32
 #include <iostream>
 #include <cuda_runtime.h>
-
+#include <ctime>
 using namespace std;
 
+// global counter for total flops
+__device__ unsigned long long deviceFlops = 0, deviceBytes = 0;
 
 void matInit(float* D, int rowDim, int colDim, int val) {
   for (int i = 0; i < rowDim * colDim; i++) D[i] = val;
@@ -21,14 +23,19 @@ void dispMat(float* D, int M, int N) {
 __global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
   int row = blockIdx.y * block_size + (threadIdx.x / block_size);  //threadIdx.y;
   int col = blockIdx.x * block_size + (threadIdx.x % block_size); //threadIdx.x;
-
+  unsigned long long localFlops = 0, localBytes = 0;
   if (row < M && col < N) {
     float sum = 0.0f;
     for (int i = 0; i < K; i++) {
       sum += A[row * K + i] * B[i * N + col];
+      localFlops += 2; // 1 multiply + 1 add
+      localBytes += sizeof(float) * 2; // one for read of element in A and one for element in B
     }
-    C[row * N + col] = sum;
+    C[row * N + col] = sum;  
+    localBytes += sizeof(float); // one for element write of C
   }
+  atomicAdd(&deviceFlops, localFlops);
+  atomicAdd(&deviceBytes, localBytes);
 }
 
 int main(int argc, char *argv[]) {
@@ -37,10 +44,10 @@ int main(int argc, char *argv[]) {
     return 1;
   }*/
 
-  int M = 8; // atoi(argv[1]);
-  int N = 8; // atoi(argv[2]);
-  int K = 8; // atoi(argv[3]);
-  int block_size = 4; // atoi(argv[4]);
+  int M = 512; // atoi(argv[1]);
+  int N = 512; // atoi(argv[2]);
+  int K = 512; // atoi(argv[3]);
+  int block_size = 1024; // atoi(argv[4]);
 
   float *A = new float[M * K];
   float *B = new float[K * N];
@@ -65,21 +72,45 @@ int main(int argc, char *argv[]) {
   dim3 gridDim((N + block_size - 1) / block_size,
              (M + block_size - 1) / block_size);
 
+  cudaEvent_t start, stop;
+  cudaEventCreate(&start);
+  cudaEventCreate(&stop);
 
+  cudaEventRecord(start); // Record when kernel starts
   naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
+  cudaEventRecord(stop);  // Record when kernel stops
+
+  cudaEventSynchronize(stop); // Wait for kernel to finish
+
+  float kernelExecutionTime;
+  cudaEventElapsedTime(&kernelExecutionTime, start, stop); // time recorded in milliseconds
+ 
+  unsigned long long hostFlops = 0, hostBytes = 0;
+  cudaMemcpyFromSymbol(&hostFlops, deviceFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostBytes, deviceBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
 
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess)
       printf("Kernel launch error: %s\n", cudaGetErrorString(err));
 
+  
   cudaDeviceSynchronize();
   err = cudaGetLastError();
   if (err != cudaSuccess)
       printf("Kernel execution error: %s\n", cudaGetErrorString(err));
-
+ 
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-  dispMat(C, M, N);
+  //dispMat(C, M, N);
 
+  cout << "**** Roofline Analysis ****"<< endl;
+  cout << "Total number of operations ="<< hostFlops << endl;
+  cout << "Total number of bytes movement=" << hostBytes << endl;
+  cout << "Arithematic Intensity =" << ((double)hostFlops/hostBytes) << " FLOPs/bytes" << endl;
+  cout << "Kernel Execution Time=" << kernelExecutionTime << " milliseconds" << endl;
+  cout << "Performance =" << (double)hostFlops/(kernelExecutionTime * 0.001) << " FLOPs/seconds" << endl;
+
+  cudaEventDestroy(start);
+  cudaEventDestroy(stop);
   delete[] A;
   delete[] B;
   delete[] C;
