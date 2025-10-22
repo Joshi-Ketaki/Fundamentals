@@ -52,6 +52,10 @@ int main(int argc, char *argv[]) {
   float *A = new float[M * K];
   float *B = new float[K * N];
   float *C = new float[M * N];
+
+  double peakPerf = 15.7e12; // 14 TFLOPS/s peak perf for GV100 single precision
+  double peakBw = 9e11; // 900 GB/s
+  
   matInit(A, M, K, 1);
   matInit(B, K, N, 1);
   matInit(C, M, N, 0); // initialize to 5 to detect if overwritten
@@ -102,12 +106,21 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   //dispMat(C, M, N);
 
+  double ridgeIntensity = (peakPerf/peakBw);
+  double arithIntensity = ((double)hostFlops/hostBytes);
   cout << "**** Roofline Analysis ****"<< endl;
   cout << "Total number of operations ="<< hostFlops << endl;
   cout << "Total number of bytes movement=" << hostBytes << endl;
-  cout << "Arithematic Intensity =" << ((double)hostFlops/hostBytes) << " FLOPs/bytes" << endl;
+  cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
+  cout << "Ridge Intensity = " << ridgeIntensity << " FLOPs/byte" << endl;
   cout << "Kernel Execution Time=" << kernelExecutionTime << " milliseconds" << endl;
-  cout << "Performance =" << (double)hostFlops/(kernelExecutionTime * 0.001) << " FLOPs/seconds" << endl;
+  cout << "Achieved performance =" << (double)hostFlops/(kernelExecutionTime * 0.001) << " FLOPs/seconds" << endl;
+
+
+  if(arithIntensity < ridgeIntensity)
+	cout << "The kernel is MEMORY-BOUND" << endl;
+  else
+ 	cout << "The kernel is COMPUTE-BOUND" << endl;
 
   cudaEventDestroy(start);
   cudaEventDestroy(stop);
