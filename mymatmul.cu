@@ -59,7 +59,7 @@ __global__ void naive_matmul_fp16(int M, int N, int K, half* hA, half* hB, float
   if (row < M && col < N) {
     half sum = __float2half(0.0f);
     for (int i = 0; i < K; i++) {
-      sum += __hadd(sum, __hmul(hA[row * K + i], hB[i * N + col])); // hA[row * K + i] * hB[i * N + col];
+      sum = __hadd(sum, __hmul(hA[row * K + i], hB[i * N + col])); // hA[row * K + i] * hB[i * N + col];
       localFlops += 2ull; // 1 multiply + 1 add
       localBytes += sizeof(half) * 2ull; // one for read of element in A and one for element in B
     }
@@ -122,6 +122,58 @@ __global__ void tiled_matmul(int M, int N, int K, float* A, float* B, float* C, 
 
 }
 
+__global__ void tiled_matmul_fp16(int M, int N, int K, half* A, half* B, float* C, int block_size) {
+
+  // This is the outlook from one tile's point of view
+  // calc row and col of output matrix
+  int row = blockIdx.y * block_size + threadIdx.y;
+  int col = blockIdx.x * block_size + threadIdx.x;
+
+  // We are making tiles along K dimension
+  // total number of tiles = ceil (K/tiles)
+  // The below calc is to account for cases such as K%blk_size != 0 
+  // && K > ceil (K/block_size)
+
+  half sum = __float2half(0.0f);
+  unsigned long long localFlops = 0ull;
+  unsigned long long localBytes = 0ull;
+
+  for(int t = 0; t < ((K+block_size-1)/block_size); t++)
+  {
+	// Load tiles from global memory into shared memory
+ 	extern __shared__ half shared_mem_half[];
+	half* As = shared_mem_half;
+	half* Bs = shared_mem_half + (block_size * block_size);
+	
+	int Acol = t * block_size + threadIdx.x;
+	int Brow = t * block_size + threadIdx.y;
+
+        // load them in row major format
+	As[threadIdx.y * block_size + threadIdx.x] =  (row < M && Acol < N) ? A[row * K +  Acol] : __float2half(0.0f);
+	Bs[threadIdx.y * block_size + threadIdx.x] = (Brow < M && col < N) ? B[Brow * N + col] : __float2half(0.0f);
+  localBytes += 2ull * sizeof(half); // one load from A and one from B
+	__syncthreads();
+
+	// Multiply tiles
+	for (int i = 0; i < block_size; i++)
+	{
+		sum = __hadd(sum, __hmul(As[threadIdx.y * block_size + i], Bs[i * block_size + threadIdx.x]));
+		localFlops += 2ull;
+	}
+        __syncthreads();
+	 
+  }
+  
+  if(row < M && col < N) {
+	    C[row*N+col] = __half2float(sum);
+      localBytes += 1ull * sizeof(float); // one write to C
+  }
+  
+  atomicAdd(&deviceHalfFlops, localFlops);
+  atomicAdd(&deviceHalfBytes, localBytes);
+
+}
+
 void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
 {
   double arithIntensity = ((double)flops/bytes);
@@ -130,11 +182,21 @@ void printStats(unsigned long long flops, unsigned long long bytes, double ridge
   cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
   cout << "Ridge Intensity = " << ridgeIntensity << " FLOPs/byte" << endl;
   double effThroughput = min(peakPerf, arithIntensity/peakBw);
+  //cout << "Effective Throughput = " << effThroughput/1e12 << " TFLOPS/s" << endl;
   
   if(arithIntensity < ridgeIntensity)
         cout << "The kernel is MEMORY-BOUND" << endl;
   else
         cout << "The kernel is COMPUTE-BOUND" << endl;
+}
+
+void zeroOut()
+{
+  unsigned long long zero = 0ull;
+  cudaMemcpyToSymbol(deviceFlops, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceBytes, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
 }
 
 int main(int argc, char *argv[]) {
@@ -176,13 +238,10 @@ int main(int argc, char *argv[]) {
 
 
   double ridgeIntensity = (double)peakPerf/peakBw;
-  unsigned long long hostFlops = 0ull, hostBytes = 0ull;
-  unsigned long long zero = 0ull;
-  cudaMemcpyToSymbol(deviceFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceBytes, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
+
   //******************************** Naive Matmul *******************************
+  unsigned long long hostFlops = 0ull, hostBytes = 0ull;
+  zeroOut();
   naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size); 
   cudaDeviceSynchronize();
   err = cudaGetLastError();
@@ -195,6 +254,8 @@ int main(int argc, char *argv[]) {
   printStats(hostFlops, hostBytes, ridgeIntensity);
 
   // ****************************** FP 16 Matmul ********************************* 
+  hostFlops = 0ull; hostBytes = 0ull;
+  zeroOut();
   naive_matmul_fp16<<<gridDim, blockDim>>>(M, N, K, (half*)dhA, (half*)dhB, dC, block_size);
   cout << "\n Fp16 Naive Matmul" << endl;
   cudaDeviceSynchronize();
@@ -207,8 +268,9 @@ int main(int argc, char *argv[]) {
   printStats(hostFlops, hostBytes, ridgeIntensity);
 
   // ******************************* Tiled Matmul **********************************
-  
-  /*cout << "\n  Tiled Matmul" << endl;
+  /*hostFlops = 0ull; hostBytes = 0ull;
+  zeroOut();
+  cout << "\n  Tiled Matmul" << endl;
   tiled_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
   cudaDeviceSynchronize();
   err = cudaGetLastError();
@@ -217,8 +279,22 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);*/
+  printStats(hostFlops, hostBytes, ridgeIntensity);
  
+  // ******************************* Tiled FP16 Matmul **********************************  
+  hostFlops = 0ull; hostBytes = 0ull;
+  zeroOut();
+  cout << "\n  Tiled FP16 Matmul" << endl;
+  tiled_matmul_fp16<<<gridDim, blockDim>>>(M, N, K, (half*)dhA, (half*)dhB, dC, block_size);
+  cudaDeviceSynchronize();
+  err = cudaGetLastError();
+  if (err != cudaSuccess) 
+    printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  printStats(hostFlops, hostBytes, ridgeIntensity);*/
+
   delete[] A;
   delete[] B;
   delete[] C;
@@ -233,3 +309,29 @@ int main(int argc, char *argv[]) {
 
   return 0;
 }
+
+
+/*
+RESULTS:
+Ridge Intensity = 17.4444 FLOPs/byte
+Total number of operations =524288
+
+Naive Matmul
+Total number of bytes movement=2113536        <------ Byte movement is high due to no reuse of data
+Arithematic Intensity =0.248062 FLOPs/bytes   <------ AI is not so great. The kernel is memory bound
+
+Naive Matmul FP16
+Fp16 Naive Matmul
+Total number of bytes movement=1064960        <------ Byte movement is a little better due to fp16.
+Arithematic Intensity =0.492308 FLOPs/bytes   <------ AI has improved due to fp16. The kernel is still memory bound
+
+
+Tiled Matmul
+Total number of bytes movement=81920           <------ Byte movement has improved due to tiling.
+Arithematic Intensity =6.4 FLOPs/bytes         <------ AI has improved due to tiling. The kernel is still memory bound though
+
+Tiled Matmul FP16:
+Total number of bytes movement=49152           <------ Byte movement has improved further due to fp16.
+Arithematic Intensity =10.6667 FLOPs/bytes.    <------ AI has improved much more due to tiling and fp16. We are still memory bound though
+
+*/
