@@ -70,6 +70,58 @@ __global__ void naive_matmul_fp16(int M, int N, int K, half* hA, half* hB, float
   atomicAdd(&deviceHalfBytes, localBytes);
 }
 
+__global__ void tiled_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
+
+  // This is the outlook from one tile's point of view
+  // calc row and col of output matrix
+  int row = blockIdx.y * block_size + threadIdx.y;
+  int col = blockIdx.x * block_size + threadIdx.x;
+
+  // We are making tiles along K dimension
+  // total number of tiles = ceil (K/tiles)
+  // The below calc is to account for cases such as K%blk_size != 0 
+  // && K > ceil (K/block_size)
+
+  float sum = 0.0f;
+  unsigned long long localFlops = 0ull;
+  unsigned long long localBytes = 0ull;
+
+  for(int t = 0; t < ((K+block_size-1)/block_size); t++)
+  {
+	// Load tiles from global memory into shared memory
+ 	extern __shared__ float shared_mem[];
+	float* As = shared_mem;
+	float* Bs = shared_mem + (block_size * block_size);
+	
+	int Acol = t * block_size + threadIdx.x;
+	int Brow = t * block_size + threadIdx.y;
+
+        // load them in row major format
+	As[threadIdx.y * block_size + threadIdx.x] =  (row < M && Acol < N) ? A[row * K +  Acol] : 0.0f;
+	Bs[threadIdx.y * block_size + threadIdx.x] = (Brow < M && col < N) ? B[Brow * N + col] : 0.0f;
+        localBytes += 2 * sizeof(float); // one load from A and one from B
+	__syncthreads();
+
+	// Multiply tiles
+	for (int i = 0; i < block_size; i++)
+	{
+		sum += As[threadIdx.y * block_size + i] * Bs[i * block_size + threadIdx.x];
+		localFlops += 2ull;
+	}
+        __syncthreads();
+	 
+  }
+  
+  if(row < M && col < N) {
+	C[row*N+col] = sum;
+        localBytes += 1ull * sizeof(float); // one write to C
+  }
+  
+  atomicAdd(&deviceFlops, localFlops);
+  atomicAdd(&deviceBytes, localBytes);
+
+}
+
 void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
 {
   double arithIntensity = ((double)flops/bytes);
@@ -129,7 +181,7 @@ int main(int argc, char *argv[]) {
   unsigned long long zero = 0ull;
   cudaMemcpyToSymbol(deviceFlops, &zero, sizeof(unsigned long long));
   cudaMemcpyToSymbol(deviceBytes, &zero, sizeof(unsigned long long));
-  naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
+/*  naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
   cudaDeviceSynchronize();
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) 
@@ -157,6 +209,24 @@ int main(int argc, char *argv[]) {
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   printStats(hostFlops, hostBytes, ridgeIntensity);
   // dispMat(C, M, N);
+*/
+  // ******************************* Tiled Matmul **********************************
+  
+  hostFlops = 0ull;
+  hostBytes = 0ull;
+  zero = 0ull;
+  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
+  cout << "\n  Tiled Matmul" << endl;
+  tiled_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
+  cudaDeviceSynchronize();
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess)
+      printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  printStats(hostFlops, hostBytes, ridgeIntensity);
 
   delete[] A;
   delete[] B;
