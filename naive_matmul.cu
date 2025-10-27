@@ -56,7 +56,7 @@ __global__ void naive_matmul_fp16(int M, int N, int K, half* hA, half* hB, float
   int col = blockIdx.x * block_size + threadIdx.x; //(threadIdx.x % block_size); //threadIdx.x;
   int localFlops = 0, localBytes = 0;
   if (row < M && col < N) {
-    half sum = 0.0f;
+    half sum = __float2half(0.0f);
     for (int i = 0; i < K; i++) {
       sum += __hadd(sum, __hmul(hA[row * K + i], hB[i * N + col])); // hA[row * K + i] * hB[i * N + col];
       localFlops += 2; // 1 multiply + 1 add
@@ -69,7 +69,7 @@ __global__ void naive_matmul_fp16(int M, int N, int K, half* hA, half* hB, float
   atomicAdd(&deviceHalfBytes, localBytes);
 }
 
-double printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
+void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
 {
   double arithIntensity = ((double)flops/bytes);
   cout << "Total number of operations ="<< flops << endl;
@@ -140,9 +140,9 @@ int main(int argc, char *argv[]) {
   printStats(hostFlops, hostBytes, ridgeIntensity);
 
   // ****************************** FP 16 Matmul ********************************* 
-  //hostFlops = 0ull;
-  //hostBytes = 0ull;
-  /*cout << "\n Fp16 Naive Matmul" << endl;
+  hostFlops = 0ull;
+  hostBytes = 0ull;
+  cout << "\n Fp16 Naive Matmul" << endl;
   naive_matmul_fp16<<<gridDim, blockDim>>>(M, N, K, dhA, dhB, dC, block_size);
   cudaDeviceSynchronize();
   err = cudaGetLastError();
@@ -152,7 +152,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   printStats(hostFlops, hostBytes, ridgeIntensity);
-  dispMat(C, M, N);*/
+  // dispMat(C, M, N);
 
   delete[] A;
   delete[] B;
