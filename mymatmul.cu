@@ -268,7 +268,7 @@ int main(int argc, char *argv[]) {
   printStats(hostFlops, hostBytes, ridgeIntensity);
 
   // ******************************* Tiled Matmul **********************************
-  /*hostFlops = 0ull; hostBytes = 0ull;
+  hostFlops = 0ull; hostBytes = 0ull;
   zeroOut();
   cout << "\n  Tiled Matmul" << endl;
   tiled_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
@@ -293,7 +293,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);*/
+  printStats(hostFlops, hostBytes, ridgeIntensity);
 
   delete[] A;
   delete[] B;
