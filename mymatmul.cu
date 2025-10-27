@@ -190,20 +190,29 @@ int main(int argc, char *argv[]) {
 
 
   double ridgeIntensity = (double)peakPerf/peakBw;
+  unsigned long long hostFlops1 = 0, hostBytes1 = 0;
+  unsigned long long hostFlops2 = 0ull, hostBytes2 = 0ull;
+  unsigned long long hostFlops3 = 0ull, hostBytes3 = 0ull;
+  unsigned long long zero = 0ull;
+  cudaMemcpyToSymbol(deviceFlops1, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceBytes1, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfFlops2, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfBytes2, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceFlops3, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceBytes3, &zero, sizeof(unsigned long long));
+
   naive_matmul<<<gridDim, blockDim, 0, s1>>>(M, N, K, dA, dB, dC1, block_size);  
   naive_matmul_fp16<<<gridDim, blockDim, 0, s2>>>(M, N, K, (half*)dhA, (half*)dhB, dC2, block_size);
-
   // Tiled matmul with dynamic shared memory
   int sharedMemSize = 2 * block_size * block_size * sizeof(float);
   tiled_matmul<<<gridDim, blockDim,sharedMemSize, s3>>>(M, N, K, dA, dB, dC3, block_size);
 
+  // Wait for all streams
+  cudaStreamSynchronize(s1);
+  cudaStreamSynchronize(s2);
+  cudaStreamSynchronize(s3);
 
   //******************************** Naive Matmul *******************************
-  unsigned long long hostFlops1 = 0, hostBytes1 = 0; 
-  unsigned long long zero = 0ull;
-  cudaMemcpyToSymbol(deviceFlops1, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceBytes1, &zero, sizeof(unsigned long long));
-  //naive_matmul<<<gridDim, blockDimi, s1>>>(M, N, K, dA, dB, dC1, block_size);
   //cudaDeviceSynchronize();
   //cudaError_t err = cudaGetLastError();
   //if (err != cudaSuccess) 
@@ -215,45 +224,20 @@ int main(int argc, char *argv[]) {
   printStats(hostFlops1, hostBytes1, ridgeIntensity);
 
   // ****************************** FP 16 Matmul ********************************* 
-  unsigned long long hostFlops2 = 0ull, hostBytes2 = 0ull;
-  zero = 0ull;
-  cudaMemcpyToSymbol(deviceHalfFlops2, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfBytes2, &zero, sizeof(unsigned long long));
   cout << "\n Fp16 Naive Matmul" << endl;
-  //naive_matmul_fp16<<<gridDim, blockDim, s2>>>(M, N, K, (half*)dhA, (half*)dhB, dC2, block_size);
-  //cudaDeviceSynchronize();
-  //err = cudaGetLastError();
-  //if (err != cudaSuccess)
-  //    printf("Kernel launch error: %s\n", cudaGetErrorString(err));
   cudaMemcpy(C2, dC2, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops2, deviceHalfFlops2, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes2, deviceHalfBytes2, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   printStats(hostFlops2, hostBytes2, ridgeIntensity);
-  // dispMat(C2, M, N);
 
   // ******************************* Tiled Matmul **********************************
   
-  unsigned long long hostFlops3 = 0ull, hostBytes3 = 0ull;
-  zero = 0ull;
-  cudaMemcpyToSymbol(deviceFlops3, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceBytes3, &zero, sizeof(unsigned long long));
   cout << "\n  Tiled Matmul" << endl;
-  //tiled_matmul<<<gridDim, blockDim, s3>>>(M, N, K, dA, dB, dC3, block_size);
-  //cudaDeviceSynchronize();
-  //err = cudaGetLastError();
-  //if (err != cudaSuccess)
-  //    printf("Kernel launch error: %s\n", cudaGetErrorString(err));
   cudaMemcpy(C3, dC3, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops3, deviceFlops3, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes3, deviceBytes3, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   printStats(hostFlops3, hostBytes3, ridgeIntensity);
-
-
-  // Wait for all streams
-  cudaStreamSynchronize(s1);
-  cudaStreamSynchronize(s2);
-  cudaStreamSynchronize(s3);
-  
+ 
   delete[] A;
   delete[] B;
   delete[] C1;
