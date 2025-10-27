@@ -9,7 +9,8 @@
 using namespace std;
 
 // global counter for total flops
-__device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
+__device__ unsigned long long deviceFlops1 = 0ull, deviceBytes1 = 0ull, deviceHalfFlops2 = 0ull, deviceHalfBytes2 = 0ull;
+__device__ unsigned long long deviceFlops3 = 0ull, deviceBytes3 = 0ull;
 
 // globals
 double peakPerf = 15.7e12; // 15.7 TFLOPS/s peak perf for GV100 single precision
@@ -47,8 +48,8 @@ __global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, 
     C[row * N + col] = sum;  
     localBytes += 1ull * sizeof(float); // one for element write of C
     
-  atomicAdd(&deviceFlops, localFlops);
-  atomicAdd(&deviceBytes, localBytes);
+  atomicAdd(&deviceFlops1, localFlops);
+  atomicAdd(&deviceBytes1, localBytes);
 }
 }
 
@@ -66,8 +67,8 @@ __global__ void naive_matmul_fp16(int M, int N, int K, half* hA, half* hB, float
     C[row * N + col] = __half2float(sum);
     localBytes += 1ull * sizeof(float); // one for element write of C
   }
-  atomicAdd(&deviceHalfFlops, localFlops);
-  atomicAdd(&deviceHalfBytes, localBytes);
+  atomicAdd(&deviceHalfFlops2, localFlops);
+  atomicAdd(&deviceHalfBytes2, localBytes);
 }
 
 __global__ void tiled_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
@@ -117,8 +118,8 @@ __global__ void tiled_matmul(int M, int N, int K, float* A, float* B, float* C, 
         localBytes += 1ull * sizeof(float); // one write to C
   }
   
-  atomicAdd(&deviceFlops, localFlops);
-  atomicAdd(&deviceBytes, localBytes);
+  atomicAdd(&deviceFlops3, localFlops);
+  atomicAdd(&deviceBytes3, localBytes);
 
 }
 
@@ -144,30 +145,44 @@ int main(int argc, char *argv[]) {
   int K = 64; // atoi(argv[3]);
   int block_size = 32; // atoi(argv[4]);
 
+  // Create separate streams for concurrency
+  cudaStream_t s1, s2, s3;
+  cudaStreamCreate(&s1);
+  cudaStreamCreate(&s2);
+  cudaStreamCreate(&s3);
+  
   float *A = new float[M * K];
   half* hA = new half[M * K];
   float *B = new float[K * N];
   half* hB = new half[K*N];
-  float *C = new float[M * N];
+  float *C1 = new float[M * N];
+  float *C2 = new float[M * N];
+  float *C3 = new float[M * N];
   
   matInit(A, M, K, 1);
   matInit(hA, M, K, __float2half(1.0f));
   matInit(B, K, N, 1);
   matInit(hB, K, N, __float2half(1.0f));
-  matInit(C, M, N, 0); 
+  matInit(C1, M, N, 0); 
+  matInit(C2, M, N, 0);
+  matInit(C3, M, N, 0);
 
-  float *dA, *dhA, *dB, *dhB, *dC;
+  float *dA, *dhA, *dB, *dhB, *dC1, *dC2, *dC3;
   cudaMalloc(&dA, sizeof(float) * M * K);
   cudaMalloc(&dhA, sizeof(half) * M * K);
   cudaMalloc(&dB, sizeof(float) * K * N);
   cudaMalloc(&dhB, sizeof(half) * K * N);
-  cudaMalloc(&dC, sizeof(float) * M * N);
+  cudaMalloc(&dC1, sizeof(float) * M * N);
+  cudaMalloc(&dC2, sizeof(float) * M * N);
+  cudaMalloc(&dC3, sizeof(float) * M * N);
 
   cudaMemcpy(dA, A, sizeof(float) * M * K, cudaMemcpyHostToDevice);
   cudaMemcpy(dhA, hA, sizeof(half) * M * K, cudaMemcpyHostToDevice);
   cudaMemcpy(dB, B, sizeof(float) * K * N, cudaMemcpyHostToDevice);
   cudaMemcpy(dhB, hB, sizeof(half) * K * N, cudaMemcpyHostToDevice);
-  cudaMemcpy(dC, C, sizeof(float) * M * N, cudaMemcpyHostToDevice);
+  cudaMemcpy(dC1, C1, sizeof(float) * M * N, cudaMemcpyHostToDevice);
+  cudaMemcpy(dC2, C2, sizeof(float) * M * N, cudaMemcpyHostToDevice);
+  cudaMemcpy(dC3, C3, sizeof(float) * M * N, cudaMemcpyHostToDevice);
 
   dim3 blockDim(block_size, block_size, 1);
   dim3 gridDim((N + block_size - 1) / block_size,
@@ -175,70 +190,89 @@ int main(int argc, char *argv[]) {
 
 
   double ridgeIntensity = (double)peakPerf/peakBw;
+  naive_matmul<<<gridDim, blockDim, 0, s1>>>(M, N, K, dA, dB, dC1, block_size);  
+  naive_matmul_fp16<<<gridDim, blockDim, 0, s2>>>(M, N, K, (half*)dhA, (half*)dhB, dC2, block_size);
+
+  // Tiled matmul with dynamic shared memory
+  int sharedMemSize = 2 * block_size * block_size * sizeof(float);
+  tiled_matmul<<<gridDim, blockDim,sharedMemSize, s3>>>(M, N, K, dA, dB, dC3, block_size);
+
 
   //******************************** Naive Matmul *******************************
-  unsigned long long hostFlops = 0, hostBytes = 0; 
+  unsigned long long hostFlops1 = 0, hostBytes1 = 0; 
   unsigned long long zero = 0ull;
-  cudaMemcpyToSymbol(deviceFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceBytes, &zero, sizeof(unsigned long long));
-/*  naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
-  cudaDeviceSynchronize();
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) 
-      printf("Kernel launch error: %s\n", cudaGetErrorString(err));
-  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
+  cudaMemcpyToSymbol(deviceFlops1, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceBytes1, &zero, sizeof(unsigned long long));
+  //naive_matmul<<<gridDim, blockDimi, s1>>>(M, N, K, dA, dB, dC1, block_size);
+  //cudaDeviceSynchronize();
+  //cudaError_t err = cudaGetLastError();
+  //if (err != cudaSuccess) 
+  //    printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+  cudaMemcpy(C1, dC1, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cout << "\n Naive Matmul" << endl;
-  cudaMemcpyFromSymbol(&hostFlops, deviceFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostBytes, deviceBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
+  cudaMemcpyFromSymbol(&hostFlops1, deviceFlops1, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostBytes1, deviceBytes1, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  printStats(hostFlops1, hostBytes1, ridgeIntensity);
 
   // ****************************** FP 16 Matmul ********************************* 
-  hostFlops = 0ull;
-  hostBytes = 0ull;
+  unsigned long long hostFlops2 = 0ull, hostBytes2 = 0ull;
   zero = 0ull;
-  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfFlops2, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfBytes2, &zero, sizeof(unsigned long long));
   cout << "\n Fp16 Naive Matmul" << endl;
-  naive_matmul_fp16<<<gridDim, blockDim>>>(M, N, K, (half*)dhA, (half*)dhB, dC, block_size);
-  cudaDeviceSynchronize();
-  err = cudaGetLastError();
-  if (err != cudaSuccess)
-      printf("Kernel launch error: %s\n", cudaGetErrorString(err));
-  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
-  // dispMat(C, M, N);
-*/
+  //naive_matmul_fp16<<<gridDim, blockDim, s2>>>(M, N, K, (half*)dhA, (half*)dhB, dC2, block_size);
+  //cudaDeviceSynchronize();
+  //err = cudaGetLastError();
+  //if (err != cudaSuccess)
+  //    printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+  cudaMemcpy(C2, dC2, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostFlops2, deviceHalfFlops2, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostBytes2, deviceHalfBytes2, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  printStats(hostFlops2, hostBytes2, ridgeIntensity);
+  // dispMat(C2, M, N);
+
   // ******************************* Tiled Matmul **********************************
   
-  hostFlops = 0ull;
-  hostBytes = 0ull;
+  unsigned long long hostFlops3 = 0ull, hostBytes3 = 0ull;
   zero = 0ull;
-  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceFlops3, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceBytes3, &zero, sizeof(unsigned long long));
   cout << "\n  Tiled Matmul" << endl;
-  tiled_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
-  cudaDeviceSynchronize();
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess)
-      printf("Kernel launch error: %s\n", cudaGetErrorString(err));
-  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
+  //tiled_matmul<<<gridDim, blockDim, s3>>>(M, N, K, dA, dB, dC3, block_size);
+  //cudaDeviceSynchronize();
+  //err = cudaGetLastError();
+  //if (err != cudaSuccess)
+  //    printf("Kernel launch error: %s\n", cudaGetErrorString(err));
+  cudaMemcpy(C3, dC3, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostFlops3, deviceFlops3, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  cudaMemcpyFromSymbol(&hostBytes3, deviceBytes3, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
+  printStats(hostFlops3, hostBytes3, ridgeIntensity);
 
+
+  // Wait for all streams
+  cudaStreamSynchronize(s1);
+  cudaStreamSynchronize(s2);
+  cudaStreamSynchronize(s3);
+  
   delete[] A;
   delete[] B;
-  delete[] C;
+  delete[] C1;
+  delete[] C2;
+  delete[] C3;
   delete[] hA;
   delete[] hB;
 
   cudaFree(dA);
   cudaFree(dB);
-  cudaFree(dC);
+  cudaFree(dC1);
+  cudaFree(dC2);
+  cudaFree(dC3);
   cudaFree(dhA);
   cudaFree(dhB);
 
+  // Clean up streams
+  cudaStreamDestroy(s1);
+  cudaStreamDestroy(s2);
+  cudaStreamDestroy(s3);
   return 0;
 }
