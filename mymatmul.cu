@@ -6,7 +6,13 @@
 //#include <hip_fp16.h> 
 #include <cuda_runtime.h>
 #include <ctime>
+#include <mma.h>
+using namespace nvcuda;
 using namespace std;
+
+WMMA_M = 16;
+WMMA_N = 16;
+WMMA_K = 16;
 
 // global counter for total flops
 __device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
@@ -177,6 +183,43 @@ __global__ void tiled_matmul_fp16(int M, int N, int K, half* A, half* B, float* 
 
 }
 
+__global__ void tensor_core_matmul_fp16(int M, int N, int K, half* A, half* B, float* C, int block_size) {
+  
+  int row = (blockIdx.y * blockDim.y + threadIdx.y) / WMMA_M;
+  int col = (blockIdx.x * blockDim.x + threadIdx.x) / WMMA_N;
+
+  if (row * WMMA_M >= M || col * WMMA_N >= N) return;
+
+  // Declare the fragments
+  wmma::fragment(wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major) a_frag;
+  wmma::fragment(wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major) b_frag;
+  wmma::fragment(wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float) c_frag;
+  wmma_fill_fragment(c_frag, 0.0f);
+  unsigned long long localFlops = 0ull;
+  unsigned long long localBytes = 0ull;
+  
+  for (int t = 0; t < (K + WMMA_K -1)/ WMMA_K; t++)
+  {
+      int Arow = row * WMMA_M;
+      int Acol = t * WMMA_K;
+      int Brow = t * WMMA_K;
+      int Bcol = col * WMMA_N;
+  
+      if(Arow < M && Acol < K && Brow < K && Bcol < N)
+      {
+        // Load the inputs
+        wmma::load_matrix_sync(a_frag, A + Arow * M + Acol, K);
+        wmma::load_matrix_sync(b_frag, B + Brow * N + Bcol, N);
+        localBytes += sizeof(half) * (WMMA_M * WMMA_K + WMMA_K * WMMA_N)
+
+        // Perform the matrix multiplication
+        wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+        localFlops += 2ull * WMMA_M * WMMAN * WMMA_K;
+      }
+
+  }
+}
+
 void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
 {
   double arithIntensity = ((double)flops/bytes);
@@ -185,7 +228,7 @@ void printStats(unsigned long long flops, unsigned long long bytes, double ridge
   cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
   cout << "Ridge Intensity = " << ridgeIntensity << " FLOPs/byte" << endl;
   // double effThroughput = min(peakTflops_fp32, arithIntensity/peakBw);
-  //cout << "Effective Throughput = " << effThroughput/1e12 << " TFLOPS/s" << endl;
+  // cout << "Effective Throughput = " << effThroughput/1e12 << " TFLOPS/s" << endl;
   
   if(arithIntensity < ridgeIntensity)
         cout << "The kernel is MEMORY-BOUND" << endl;
@@ -269,7 +312,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
 
   // ******************************* Tiled Matmul **********************************
   hostFlops = 0ull; hostBytes = 0ull;
@@ -297,7 +340,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
 
   delete[] A;
   delete[] B;
