@@ -12,7 +12,10 @@ using namespace std;
 __device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
 
 // globals
-double peakPerf = 15.7e12; // 15.7 TFLOPS/s peak perf for GV100 single precision
+// Reference: https://images.nvidia.com/content/volta-architecture/pdf/volta-architecture-whitepaper.pdf
+// https://www.pny.com/file%20library/company/support/product%20brochures/nvidia%20quadro/english/gv100-datasheet-highlights-web.pdf
+double peakTflops_fp32 = 15.7e12; // 15.7 TFLOPS/s for GV100 single precision
+double peakTflops_fp16 = 29.6e12; // 29.6 TFLOPS/s for GV100 half precision
 double peakBw = 9e11; // 900 GB/s
 
 void matInit(float* D, int rowDim, int colDim, float val) {
@@ -181,7 +184,7 @@ void printStats(unsigned long long flops, unsigned long long bytes, double ridge
   cout << "Total number of bytes movement=" << bytes << endl;
   cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
   cout << "Ridge Intensity = " << ridgeIntensity << " FLOPs/byte" << endl;
-  double effThroughput = min(peakPerf, arithIntensity/peakBw);
+  // double effThroughput = min(peakTflops_fp32, arithIntensity/peakBw);
   //cout << "Effective Throughput = " << effThroughput/1e12 << " TFLOPS/s" << endl;
   
   if(arithIntensity < ridgeIntensity)
@@ -237,11 +240,12 @@ int main(int argc, char *argv[]) {
              (M + block_size - 1) / block_size);
 
 
-  double ridgeIntensity = (double)peakPerf/peakBw;
+  double ridgeIntensity_fp32 = (double)peakTflops_fp32/peakBw;
+  double ridgeIntensity_fp16 = (double)peakTflops_fp16/peakBw;
 
   //******************************** Naive Matmul *******************************
   unsigned long long hostFlops = 0ull, hostBytes = 0ull;
-  zeroOut();
+  /*zeroOut();
   naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size); 
   cudaDeviceSynchronize();
   err = cudaGetLastError();
@@ -251,7 +255,7 @@ int main(int argc, char *argv[]) {
   cout << "\n Naive Matmul" << endl;
   cudaMemcpyFromSymbol(&hostFlops, deviceFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp32);
 
   // ****************************** FP 16 Matmul ********************************* 
   hostFlops = 0ull; hostBytes = 0ull;
@@ -265,7 +269,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
 
   // ******************************* Tiled Matmul **********************************
   hostFlops = 0ull; hostBytes = 0ull;
@@ -279,7 +283,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp32);
  
   // ******************************* Tiled FP16 Matmul **********************************  
   hostFlops = 0ull; hostBytes = 0ull;
@@ -293,7 +297,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
 
   delete[] A;
   delete[] B;
@@ -313,7 +317,8 @@ int main(int argc, char *argv[]) {
 
 /*
 RESULTS:
-Ridge Intensity = 17.4444 FLOPs/byte
+Ridge Intensity FP32 = 17.4444 FLOPs/byte
+Ridge Intensity FP16 = 32.8889 FLOPs/byte
 Total number of operations =524288
 
 Naive Matmul
