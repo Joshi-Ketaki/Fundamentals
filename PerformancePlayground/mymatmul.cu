@@ -7,10 +7,10 @@
 #include <cuda_runtime.h>
 #include <ctime>
 #include <mma.h>
-using namespace nvcuda;
+//using namespace nvcuda;
 using namespace std;
 
-const int WMMA_M = 16, WMMA_N = 16, WMMA_K = 16;
+//const int WMMA_M = 16, WMMA_N = 16, WMMA_K = 16;
 
 // global counter for total flops
 __device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
@@ -110,7 +110,7 @@ __global__ void tiled_matmul(int M, int N, int K, float* A, float* B, float* C, 
 	__syncthreads();
 
 	// Multiply tiles
-	for (int i = 0; i < block_size; i++)
+	for (int i = 0; i < min(block_size, K-(t*block_size)); i++)
 	{
 		sum += As[threadIdx.y * block_size + i] * Bs[i * block_size + threadIdx.x];
 		localFlops += 2ull;
@@ -156,13 +156,17 @@ __global__ void tiled_matmul_fp16(int M, int N, int K, half* A, half* B, float* 
 	  int Brow = t * block_size + threadIdx.y;
 
         // load them in row major format
-	  As[threadIdx.y * block_size + threadIdx.x] =  (row < M && Acol < N) ? A[row * K +  Acol] : __float2half(0.0f);
+	  As[threadIdx.y * block_size + threadIdx.x] =  (row < M && Acol < K) ? A[row * K +  Acol] : __float2half(0.0f);
 	  Bs[threadIdx.y * block_size + threadIdx.x] = (Brow < M && col < N) ? B[Brow * N + col] : __float2half(0.0f);
     localBytes += 2ull * sizeof(half); // one load from A and one from B
 	  __syncthreads();
 
 	  // Multiply tiles
-	  for (int i = 0; i < block_size; i++)
+    // if tile size is not a multiple of 32, there cound be illegal accesses
+    // so we calculate the max as wither if the entire tile or only how many elements will remain
+    // which is K - t*TILE_SIZE. Note this will be 0 if K %32 = 0. else it shou;d give remianing lelemnts of the 
+    // t tile.
+	  for (int i = 0; i < min(block_size, K - (t*block_size)); i++)
 	  {
 		  sum = __hadd(sum, __hmul(As[threadIdx.y * block_size + i], Bs[i * block_size + threadIdx.x]));
 		  localFlops += 2ull;
@@ -181,9 +185,7 @@ __global__ void tiled_matmul_fp16(int M, int N, int K, half* A, half* B, float* 
 
 }
 
-__global__ void tensor_core_matmul_fp16(int M, int N, int K, const half* A, const half* B, float* C) 
-{
-__global__ void tensor_core_matmul_fp16(int M, int N, int K, const half* A, const half* B, float* C) 
+/*__global__ void tensor_core_matmul_fp16(int M, int N, int K, const half* A, const half* B, float* C) 
 {
     using namespace nvcuda::wmma;
 
@@ -234,9 +236,7 @@ __global__ void tensor_core_matmul_fp16(int M, int N, int K, const half* A, cons
     atomicAdd(&deviceHalfFlops, localFlops);
     atomicAdd(&deviceHalfBytes, localBytes);
 }
-
-}
- 
+*/
 
 
 void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
@@ -332,13 +332,14 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
 
   // ******************************* Tiled Matmul **********************************
   hostFlops = 0ull; hostBytes = 0ull;
   zeroOut();
   cout << "\n  Tiled Matmul" << endl;
-  tiled_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size);
+  size_t sharedMemSize = 2 * block_size * block_size * sizeof(float); // for A and B tiles
+  tiled_matmul<<<gridDim, blockDim, sharedMemSize>>>(M, N, K, dA, dB, dC, block_size);
   cudaDeviceSynchronize();
   err = cudaGetLastError();
   if (err != cudaSuccess) 
@@ -352,7 +353,8 @@ int main(int argc, char *argv[]) {
   hostFlops = 0ull; hostBytes = 0ull;
   zeroOut();
   cout << "\n  Tiled FP16 Matmul" << endl;
-  tiled_matmul_fp16<<<gridDim, blockDim>>>(M, N, K, (half*)dhA, (half*)dhB, dC, block_size);
+  //size_t sharedMemSize = 2 * block_size * block_size * sizeof(float); // for A and B tiles
+  tiled_matmul_fp16<<<gridDim, blockDim, sharedMemSize>>>(M, N, K, (half*)dhA, (half*)dhB, dC, block_size);
   cudaDeviceSynchronize();
   err = cudaGetLastError();
   if (err != cudaSuccess) 
@@ -360,9 +362,9 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
 
-  hostFlops = 0ull; hostBytes = 0ull;
+ /* hostFlops = 0ull; hostBytes = 0ull;
   zeroOut();
   // Ensure M, N, K are multiples of 16 (or pad arrays before copying)
   dim3 threadsPerBlock(32, 1, 1); // one warp per block
@@ -376,7 +378,7 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
+  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
   
   delete[] A;
   delete[] B;
@@ -395,7 +397,7 @@ int main(int argc, char *argv[]) {
 
 
 /*
-RESULTS:
+RESULTS: M=N=K= 64. BLOCK_SIZE=32
 Ridge Intensity FP32 = 17.4444 FLOPs/byte
 Ridge Intensity FP16 = 32.8889 FLOPs/byte
 Total number of operations =524288
