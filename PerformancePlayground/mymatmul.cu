@@ -10,17 +10,19 @@
 using namespace nvcuda;
 using namespace std;
 
-const int WMMA_M = 16, WMMA_N = 16, WMMA_K = 16;
-
-// global counter for total flops
-__device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
-
 // globals
 // Reference: https://images.nvidia.com/content/volta-architecture/pdf/volta-architecture-whitepaper.pdf
 // https://www.pny.com/file%20library/company/support/product%20brochures/nvidia%20quadro/english/gv100-datasheet-highlights-web.pdf
 double peakTflops_fp32 = 15.7e12; // 15.7 TFLOPS/s for GV100 single precision
 double peakTflops_fp16 = 29.6e12; // 29.6 TFLOPS/s for GV100 half precision
 double peakBw = 9e11; // 900 GB/s
+
+#define WMMA_M 16
+#define WMMA_N 16
+#define WMMA_K 16
+// global counter for total flops
+__device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
+
 
 void matInit(float* D, int rowDim, int colDim, float val) {
   for (int i = 0; i < rowDim * colDim; i++) 
@@ -51,7 +53,14 @@ void dispMat_half(const half* D, int M, int N) {
   }
 }
 
-/*__global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
+void convertToColMajor(half* hMat, half* hMatCol, int K, int N)
+{
+  for (int i = 0; i < K; i++)
+    for (int j = 0; j < N; j++)
+      hMatCol[j * K + i] = hMat[i * N + j];
+}
+
+__global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
   int row = blockIdx.y * block_size + threadIdx.y; //(threadIdx.x / block_size);  //threadIdx.y;
   int col = blockIdx.x * block_size + threadIdx.x; //(threadIdx.x % block_size); //threadIdx.x;
   unsigned long long localFlops = 0ull, localBytes = 0ull;
@@ -194,56 +203,39 @@ __global__ void tiled_matmul_fp16(int M, int N, int K, half* A, half* B, float* 
   atomicAdd(&deviceHalfFlops, localFlops);
   atomicAdd(&deviceHalfBytes, localBytes);
 
-}*/
-
-
-void convertToColMajor(half* hMat, half* hMatCol, int K, int N)
-{
-  for (int i = 0; i < K; i++)
-    for (int j = 0; j < N; j++)
-      hMatCol[j * K + i] = hMat[i * N + j];
 }
 
-/*__global__ void tensor_core_matmul_fp16(int M, int N, int K, 
-                                        const half* A, const half* B, float* C) 
+__global__ void tensor_core_matmul_fp16(half* dA, const half*  dB, float* C, int M, int N, int K)
 {
-  // One warp per block — map directly by block index
-  int warpRow = blockIdx.y;
-  int warpCol = blockIdx.x;
+    // Each warp computes one 16×16 tile of C
+    int warpM = blockIdx.y;
+    int warpN = blockIdx.x;
 
-  // Declare fragments
-  wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
-  wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::col_major> b_frag;
-  wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
-  wmma::fill_fragment(c_frag, 0.0f);
+    // Fragments
+    wmma::fragment<wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> a_frag;
+    wmma::fragment<wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, wmma::row_major> b_frag;
+    wmma::fragment<wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> c_frag;
 
-  int aRow = warpRow * WMMA_M;
-  int bCol = warpCol * WMMA_N;
+    wmma::fill_fragment(c_frag, 0.0f);
 
-  // Loop over K tiles
-  for (int k = 0; k < K; k += WMMA_K)
-  {
-    int aCol = k;
-    int bRow = k;
-
-    // Only operate on valid tiles
-    if (aRow + WMMA_M <= M && bCol + WMMA_N <= N && aCol + WMMA_K <= K)
+    // Loop over K dimension in 16-wide tiles
+    for (int k = 0; k < K; k += WMMA_K)
     {
-      // Row-major A
-      wmma::load_matrix_sync(a_frag, A + aRow * K + aCol, K);
-      // Column-major B → use column-major stride = K
-      wmma::load_matrix_sync(b_frag, B + bCol * K + bRow, K);
-      wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+        int aRow = warpM * WMMA_M;
+        int aCol = k;
+        int bRow = k;
+        int bCol = warpN * WMMA_N;
+        // Load the inputs
+        wmma::load_matrix_sync(a_frag, &dA[aRow * K + aCol], K);      
+        wmma::load_matrix_sync(b_frag, &dB[bRow * N + bCol], N);       
+        wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
     }
-  }
 
-  // Store result
-  int cRow = warpRow * WMMA_M;
-  int cCol = warpCol * WMMA_N;
-  if (cRow < M && cCol < N)
+    // Store result
+    int cRow = warpM * WMMA_M;
+    int cCol = warpN * WMMA_N;
     wmma::store_matrix_sync(C + cRow * N + cCol, c_frag, N, wmma::mem_row_major);
 }
-*/
 
 
 void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
@@ -273,9 +265,9 @@ void zeroOut()
 
 int main(int argc, char *argv[]) {
 
-  int M = 4; // atoi(argv[1]);
-  int N = 4; // atoi(argv[2]);
-  int K = 4; // atoi(argv[3]);
+  int M = 64; // atoi(argv[1]);
+  int N = 64; // atoi(argv[2]);
+  int K = 64; // atoi(argv[3]);
   int block_size = 32; // atoi(argv[4]);
   cudaError_t err;
 
@@ -305,17 +297,17 @@ int main(int argc, char *argv[]) {
   cudaMemcpy(dhB, hB, sizeof(half) * K * N, cudaMemcpyHostToDevice);
   cudaMemcpy(dC, C, sizeof(float) * M * N, cudaMemcpyHostToDevice);
 
- // dim3 blockDim(block_size, block_size, 1);
-  //dim3 gridDim((N + block_size - 1) / block_size,
-   //          (M + block_size - 1) / block_size);
+  dim3 blockDim(block_size, block_size, 1);
+  dim3 gridDim((N + block_size - 1) / block_size,
+             (M + block_size - 1) / block_size);
 
 
-  //double ridgeIntensity_fp32 = (double)peakTflops_fp32/peakBw;
-  //double ridgeIntensity_fp16 = (double)peakTflops_fp16/peakBw;
+  double ridgeIntensity_fp32 = (double)peakTflops_fp32/peakBw;
+  double ridgeIntensity_fp16 = (double)peakTflops_fp16/peakBw;
 
   //******************************** Naive Matmul *******************************
-  //unsigned long long hostFlops = 0ull, hostBytes = 0ull;
-  /*zeroOut();
+  unsigned long long hostFlops = 0ull, hostBytes = 0ull;
+  /* zeroOut();
   naive_matmul<<<gridDim, blockDim>>>(M, N, K, dA, dB, dC, block_size); 
   cudaDeviceSynchronize();
   err = cudaGetLastError();
@@ -342,7 +334,7 @@ int main(int argc, char *argv[]) {
   printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
 
   // ******************************* Tiled Matmul **********************************
-  /* hostFlops = 0ull; hostBytes = 0ull;
+  hostFlops = 0ull; hostBytes = 0ull;
   zeroOut();
   cout << "\n  Tiled Matmul" << endl;
   size_t sharedMemSize = 2 * block_size * block_size * sizeof(float); // for A and B tiles
@@ -371,59 +363,29 @@ int main(int argc, char *argv[]) {
   cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
   printStats(hostFlops, hostBytes, ridgeIntensity_fp16);
 
-  hostFlops = 0ull; hostBytes = 0ull;
-  zeroOut();
-  // Ensure M, N, K are multiples of 16 (or pad arrays before copying)
-  dim3 threadsPerBlock(32, 1, 1); // one warp per block
-  dim3 grid1((N + WMMA_N - 1) / WMMA_N, (M + WMMA_M - 1) / WMMA_M);
-  tensor_core_matmul_fp16<<<grid1, threadsPerBlock>>>(M, N, K, (half*)dhA, (half*)dhB, dC);
+  /* ******************************** Tensor Core FP16 Matmul *******************************/
+  /* dim3 threadsPerBlock(32, 1, 1); // one warp per block
+  dim3 gridDim((N + WMMA_N - 1) / WMMA_N, 
+                (M + WMMA_M - 1) / WMMA_M);
+  tensor_core_matmul_fp16<<<gridDim, threadsPerBlock>>>((half*)dhA, (half*)dhB, dC, M, N, K);
   cudaDeviceSynchronize();
   cout << "\n  Tensor Core FP16 Matmul" << endl;
   err = cudaGetLastError();
   if (err != cudaSuccess) 
     printf("Kernel launch error: %s\n", cudaGetErrorString(err));
-  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostFlops, deviceHalfFlops, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  cudaMemcpyFromSymbol(&hostBytes, deviceHalfBytes, sizeof(unsigned long long), 0, cudaMemcpyDeviceToHost);
-  printStats(hostFlops, hostBytes, ridgeIntensity_fp16);*/
-  
-  /* ******************************** Tensor Core FP16 Matmul *******************************/
-  // dim3 threadsPerBlock(32, 1, 1); // one warp per block
-  // dim3 gridDim((N + WMMA_N - 1) / WMMA_N, 
-  //              (M + WMMA_M - 1) / WMMA_M);
-  cout << "hB matrix in row major format: " << endl;
-  dispMat_half(hB, K, N);
-  half* hMatCol = new half [K * N];
-  convertToColMajor(hB, hMatCol, K, N);
-  cout << "hB matrix in column major format: " << endl;
-  dispMat_half(hMatCol, K, N);
-  //half* dhMatCol;
-  // cudaMalloc(&dhMatCol, sizeof(half) * K * N);
-  //cudaMemcpy(dhMatCol, hMatCol, sizeof(half) * K * N, cudaMemcpyHostToDevice);
-  // tensor_core_matmul_fp16<<<gridDim, threadsPerBlock>>>(M, N, K, (half*)dhA, (half*)dhMatCol, dC);
-  // cudaDeviceSynchronize();
-  // cout << "\n  Tensor Core FP16 Matmul" << endl;
-  // err = cudaGetLastError();
-  // if (err != cudaSuccess) 
-  //   printf("Kernel launch error: %s\n", cudaGetErrorString(err));
-  // cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);
-  // dispMat(C, M, N);
-
+  cudaMemcpy(C, dC, sizeof(float) * M * N, cudaMemcpyDeviceToHost);*/
   /* ******************************* Cleanup ************************************************/
   delete[] A;
   delete[] B;
   delete[] C;
   delete[] hA;
   delete[] hB;
-  delete[] hMatCol;
   
   cudaFree(dA);
   cudaFree(dB);
   cudaFree(dC);
   cudaFree(dhA);
   cudaFree(dhB);
-  //cudaFree(dhMatCol);
-
   return 0;
 }
 
