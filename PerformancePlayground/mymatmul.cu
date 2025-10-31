@@ -23,6 +23,9 @@ double peakBw = 9e11; // 900 GB/s
 // global counter for total flops
 __device__ unsigned long long deviceFlops = 0ull, deviceBytes = 0ull, deviceHalfFlops = 0ull, deviceHalfBytes = 0ull;
 
+// --------------------------------------------------------------
+// Helper functions
+// --------------------------------------------------------------
 
 void matInit(float* D, int rowDim, int colDim, float val) {
   for (int i = 0; i < rowDim * colDim; i++) 
@@ -59,6 +62,36 @@ void convertToColMajor(half* hMat, half* hMatCol, int K, int N)
     for (int j = 0; j < N; j++)
       hMatCol[j * K + i] = hMat[i * N + j];
 }
+
+
+void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
+{
+  double arithIntensity = ((double)flops/bytes);
+  cout << "Total number of operations ="<< flops << endl;
+  cout << "Total number of bytes movement=" << bytes << endl;
+  cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
+  cout << "Ridge Intensity = " << ridgeIntensity << " FLOPs/byte" << endl;
+  // double effThroughput = min(peakTflops_fp32, arithIntensity/peakBw);
+  // cout << "Effective Throughput = " << effThroughput/1e12 << " TFLOPS/s" << endl;
+  
+  if(arithIntensity < ridgeIntensity)
+        cout << "The kernel is MEMORY-BOUND" << endl;
+  else
+        cout << "The kernel is COMPUTE-BOUND" << endl;
+}
+
+void zeroOut()
+{
+  unsigned long long zero = 0ull;
+  cudaMemcpyToSymbol(deviceFlops, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceBytes, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
+  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
+}
+
+// --------------------------------------------------------------
+// Kernels
+// --------------------------------------------------------------
 
 __global__ void naive_matmul(int M, int N, int K, float* A, float* B, float* C, int block_size) {
   int row = blockIdx.y * block_size + threadIdx.y; //(threadIdx.x / block_size);  //threadIdx.y;
@@ -235,32 +268,6 @@ __global__ void tensor_core_matmul_fp16(half* dA, const half*  dB, float* C, int
     int cRow = warpM * WMMA_M;
     int cCol = warpN * WMMA_N;
     wmma::store_matrix_sync(C + cRow * N + cCol, c_frag, N, wmma::mem_row_major);
-}
-
-
-void printStats(unsigned long long flops, unsigned long long bytes, double ridgeIntensity)
-{
-  double arithIntensity = ((double)flops/bytes);
-  cout << "Total number of operations ="<< flops << endl;
-  cout << "Total number of bytes movement=" << bytes << endl;
-  cout << "Arithematic Intensity =" << arithIntensity << " FLOPs/bytes" << endl;
-  cout << "Ridge Intensity = " << ridgeIntensity << " FLOPs/byte" << endl;
-  // double effThroughput = min(peakTflops_fp32, arithIntensity/peakBw);
-  // cout << "Effective Throughput = " << effThroughput/1e12 << " TFLOPS/s" << endl;
-  
-  if(arithIntensity < ridgeIntensity)
-        cout << "The kernel is MEMORY-BOUND" << endl;
-  else
-        cout << "The kernel is COMPUTE-BOUND" << endl;
-}
-
-void zeroOut()
-{
-  unsigned long long zero = 0ull;
-  cudaMemcpyToSymbol(deviceFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceBytes, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfFlops, &zero, sizeof(unsigned long long));
-  cudaMemcpyToSymbol(deviceHalfBytes, &zero, sizeof(unsigned long long));
 }
 
 int main(int argc, char *argv[]) {

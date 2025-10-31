@@ -9,7 +9,7 @@ int OUTPUT_HT = INPUT_HT - KERNEL_SIZE + 1;
 int OUTPUT_WD = INPUT_WD - KERNEL_SIZE + 1;
 
 // --------------------------------------------------------------
-// Helper function to print a slice of tensor for debugging
+// Helper functions
 // --------------------------------------------------------------
 void print_tensor(float *data, int C, int H, int W, const char *name)
 {
@@ -30,9 +30,6 @@ void print_tensor(float *data, int C, int H, int W, const char *name)
     }
 }
 
-// --------------------------------------------------------------
-// Validate a few output elements manually
-// --------------------------------------------------------------
 void validate_outputs(float *cpu_output, float* gpu_output, int num_samples)
 {
     printf("\nValidating first %d output elements...\n", num_samples);
@@ -54,6 +51,9 @@ void validate_outputs(float *cpu_output, float* gpu_output, int num_samples)
     printf("\n(If these values look finite and not NaN/Inf, indexing is likely correct.)\n");
 }
 
+// --------------------------------------------------------------
+// Kernel/ CPU function
+// --------------------------------------------------------------
 void conv2d_cpu(float *input, float *kernel, float *output)
 {
     for(int ch = 0; ch < C_out; ch++)
