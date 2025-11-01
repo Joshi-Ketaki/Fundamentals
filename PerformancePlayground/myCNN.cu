@@ -4,9 +4,11 @@
 using namespace std;
 
 int C_in = 2, C_out = 1;
-int INPUT_HT = 16, INPUT_WD = 16, KERNEL_SIZE = 3;
-int OUTPUT_HT = INPUT_HT - KERNEL_SIZE + 1;
-int OUTPUT_WD = INPUT_WD - KERNEL_SIZE + 1;
+int input_depth = 4, kernel_depth = 2;
+int INPUT_HT = 16, INPUT_WD = 16, KERNEL_HT = 3, KERNEL_WD = 3;
+int OUTPUT_HT = INPUT_HT - KERNEL_HT + 1;
+int OUTPUT_WD = INPUT_WD - KERNEL_WD + 1;
+int output_depth = input_depth - kernel_depth + 1;
 
 // --------------------------------------------------------------
 // Helper functions
@@ -65,12 +67,12 @@ void conv2d_cpu(float *input, float *kernel, float *output)
                 float sum = 0.0f;
                 for(int c = 0; c < C_in; c++)
                 {
-                    for(int m = 0; m < KERNEL_SIZE; m++)
+                    for(int m = 0; m < KERNEL_HT; m++)
                     {
-                        for(int n = 0; n < KERNEL_SIZE; n++)
+                        for(int n = 0; n < KERNEL_WD; n++)
                         {
                             int inp_idx = (c * INPUT_HT + ( i + m)) * INPUT_WD + (j + n);
-                            int ker_idx = ((ch * C_in + c) * KERNEL_SIZE + m) * KERNEL_SIZE + n;
+                            int ker_idx = ((ch * C_in + c) * KERNEL_HT + m) * KERNEL_WD + n;
                             sum += input[inp_idx] * kernel[ker_idx];
                         }
                     }
@@ -87,7 +89,7 @@ void conv2d_cpu(float *input, float *kernel, float *output)
 // kernel [out_channel][inp_channel][KERNEL_SIZE][KERNEL_SIZE]
 
 __global__ void conv2d(float *input, float* kernel, float* output, 
-                       int INPUT_HT, int INPUT_WD, int KERNEL_SIZE, int OUTPUT_HT, int OUTPUT_WD,
+                       int INPUT_HT, int INPUT_WD, int KERNEL_HT, int KERNEL_WD, int OUTPUT_HT, int OUTPUT_WD,
                     int C_in, int C_out)
 {
     // calculate the output indexes
@@ -102,12 +104,12 @@ __global__ void conv2d(float *input, float* kernel, float* output,
 
     for(int c = 0; c < C_in; c++)
     {
-        for(int m = 0; m < KERNEL_SIZE; m++)
+        for(int m = 0; m < KERNEL_HT; m++)
         {
-            for(int n = 0; n < KERNEL_SIZE; n++)
+            for(int n = 0; n < KERNEL_WD; n++)
             {
                 int inp_idx = (c * INPUT_HT + out_y+m) * INPUT_WD + out_x+n;
-                int kern_idx = ((out_z * C_in + c) * KERNEL_SIZE + m) * KERNEL_SIZE + n;
+                int kern_idx = ((out_z * C_in + c) * KERNEL_HT + m) * KERNEL_WD + n;
                 sum += input[inp_idx] * kernel[kern_idx];
             }
         }
@@ -121,7 +123,7 @@ int main()
 {
 
     float *input = (float*)malloc((size_t)C_in * INPUT_HT * INPUT_WD * sizeof(float));
-    float* kernel = (float*)malloc((size_t)C_out * (size_t)C_in * KERNEL_SIZE * KERNEL_SIZE * sizeof(float));
+    float* kernel = (float*)malloc((size_t)C_out * (size_t)C_in * KERNEL_HT * KERNEL_WD * sizeof(float));
     float* cpu_output = (float*)malloc((size_t)C_out * OUTPUT_HT * OUTPUT_WD * sizeof(float));
     float* gpu_output = (float*)malloc((size_t)C_out * OUTPUT_HT * OUTPUT_WD * sizeof(float));
 
@@ -130,19 +132,19 @@ int main()
     {
         input[i] = i % 10;
     }
-    for (int i = 0; i < (size_t)C_out * (size_t)C_in * KERNEL_SIZE * KERNEL_SIZE; i++)
+    for (int i = 0; i < (size_t)C_out * (size_t)C_in * KERNEL_HT * KERNEL_WD; i++)
     {
         kernel[i] = i % 10;
     }
     conv2d_cpu(input, kernel, cpu_output);
-    //validate_outputs(cpu_output, 5); 
+    // validate_outputs(cpu_output, 5); 
     float *d_input, *d_kernel, *d_output;
     cudaMalloc(&d_input, (size_t)C_in * INPUT_HT * INPUT_WD * sizeof(float));
-    cudaMalloc(&d_kernel, (size_t)C_out * (size_t)C_in * KERNEL_SIZE * KERNEL_SIZE * sizeof(float));
+    cudaMalloc(&d_kernel, (size_t)C_out * (size_t)C_in * KERNEL_HT * KERNEL_WD * sizeof(float));
     cudaMalloc(&d_output, (size_t)C_out * OUTPUT_HT * OUTPUT_WD * sizeof(float));
 
     cudaMemcpy(d_input, input, (size_t)C_in * INPUT_HT * INPUT_WD *sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_kernel, kernel, (size_t)C_out * (size_t)C_in * KERNEL_SIZE * KERNEL_SIZE * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_kernel, kernel, (size_t)C_out * (size_t)C_in * KERNEL_HT * KERNEL_WD * sizeof(float), cudaMemcpyHostToDevice);
 
     dim3 blockSize(16, 16, 1);
     dim3 gridSize((OUTPUT_WD + blockSize.x - 1) / blockSize.x, 
@@ -150,10 +152,11 @@ int main()
 
     // Launch the convolution kernel
     conv2d<<<gridSize, blockSize>>>(d_input, d_kernel, d_output, 
-                                    INPUT_HT, INPUT_WD, KERNEL_SIZE, OUTPUT_HT, OUTPUT_WD,
+                                    INPUT_HT, INPUT_WD, KERNEL_HT, KERNEL_WD, OUTPUT_HT, OUTPUT_WD,
                                     C_in, C_out);
     cudaMemcpy(gpu_output, d_output, (size_t)C_out * OUTPUT_HT * OUTPUT_WD * sizeof(float), cudaMemcpyDeviceToHost);
     validate_outputs(cpu_output, gpu_output, 5); 
+
     free(input);
     free(kernel);
     free(cpu_output);
