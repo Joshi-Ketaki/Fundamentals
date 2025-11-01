@@ -1,4 +1,7 @@
 Look at module1 branch
+
+
+
 Note: This is a repository where I am using quick coding exercises as a playground. This is nowhere a production-level code. So please do not expect comments and documents yet. Following some initial playing around, I will be cleaning up and optimizing my code. It will also follow with some tutorials/documentation.
 
 Revise and learn fundamentals with me. Specifically focussing on accelerator architectures (starting with GPUs).
