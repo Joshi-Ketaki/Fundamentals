@@ -113,6 +113,7 @@ int main()
     dim3 blockSize(256, 1, 1);
     dim3 gridSize((N + blockSize.x - 1) / blockSize.x);
     softmax_kernel<<<gridSize, blockSize>>>(d_input, d_output, N);
+    cudaDeviceSynchronize();
     cudaMemcpy(gpu_output, d_output, sizeof(float) * N, cudaMemcpyDeviceToHost);
 
     // Validate outputs
