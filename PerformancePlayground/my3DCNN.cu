@@ -31,7 +31,7 @@ void print_tensor(float *data, int C, int H, int W, const char *name)
     }
 }
 
-void validate_outputs(float *cpu_output, int num_samples)
+void validate_outputs(float *cpu_output, float* gpu_output, int num_samples)
 {
     printf("\nValidating first %d output elements...\n", num_samples);
     for (int s = 0; s < num_samples; s++)
@@ -40,14 +40,14 @@ void validate_outputs(float *cpu_output, int num_samples)
         int i = rand() % OUTPUT_HT;
         int j = rand() % OUTPUT_WD;
         int idx = (ch * OUTPUT_HT + i) * OUTPUT_WD + j;
-        //if(cpu_output[idx] != gpu_output[idx])
-        //{
-        //    printf("\n Output mismatch!");
-        //    return;
-        //}
-        //printf("\n Outputs match");
         printf("\n CPU Output[%d][%d][%d] = %.3f\n", ch, i, j, cpu_output[idx]);
-        //printf("\n GPU Output[%d][%d][%d] = %.3f\n", ch, i, j, gpu_output[idx]);
+        printf("\n GPU Output[%d][%d][%d] = %.3f\n", ch, i, j, gpu_output[idx]);
+        if(cpu_output[idx] != gpu_output[idx])
+        {
+            printf("\n Output mismatch!");
+            return;
+        }
+        printf("\n Outputs match");
     }
     printf("\n(If these values look finite and not NaN/Inf, indexing is likely correct.)\n");
 }
@@ -84,6 +84,36 @@ void conv3d_cpu(float *input, float *kernel, float* output)
     }
 }
 
+__global__ void conv3d(float *d_input, float *d_kernel, float *d_output, 
+                   int INPUT_HT, int INPUT_WD, int KERNEL_HT, int KERNEL_WD, int OUTPUT_HT, int OUTPUT_WD,
+                   int input_depth, int kernel_depth, int output_depth)
+{
+    int out_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int out_y = blockIdx.y * blockDim.y + threadIdx.y;
+    int out_z = blockIdx.z * blockDim.z + threadIdx.z;
+
+    float sum = 0.0f;
+    if(out_x >= OUTPUT_WD || out_y >= OUTPUT_HT || out_z >= output_depth) 
+        return;
+    for(int c = 0; c < kernel_depth; c++)
+    {
+        for(int m = 0; m < KERNEL_HT; m++)
+        {
+            for(int n = 0; n < KERNEL_WD; n++)
+            {
+                int inp_depth = out_z + c;
+                int inp_ht = out_y + m;
+                int inp_wd = out_x + n;
+                int inp_idx = (inp_depth * INPUT_HT + inp_ht) * INPUT_WD + inp_wd;
+                int ker_idx = (c * KERNEL_HT + m) * KERNEL_WD + n;
+                sum += d_input[inp_idx] * d_kernel[ker_idx];
+            }
+        }
+    }
+    int op_idx = (out_z * OUTPUT_HT + out_y) * OUTPUT_WD + out_x;
+    d_output[op_idx] = sum;
+}
+
 int main()
 {
 
@@ -101,37 +131,35 @@ int main()
     {
         kernel[i] = i % 10;
     }
-    //onv2d_cpu(input, kernel, cpu_output);
-    //validate_outputs(cpu_output, 5); 
-    //float *d_input, *d_kernel, *d_output;
-    //cudaMalloc(&d_input, (size_t)inp_depth * INPUT_HT * INPUT_WD * sizeof(float));
-    //cudaMalloc(&d_kernel, (size_t)kernel_depth * KERNEL_HT * KERNEL_WD * sizeof(float));
-    //cudaMalloc(&d_output, (size_t)output_depth * OUTPUT_HT * OUTPUT_WD * sizeof(float));
+    conv3d_cpu(input, kernel, cpu_output);
+    float *d_input, *d_kernel, *d_output;
+    cudaMalloc(&d_input, (size_t)input_depth * INPUT_HT * INPUT_WD * sizeof(float));
+    cudaMalloc(&d_kernel, (size_t)kernel_depth * KERNEL_HT * KERNEL_WD * sizeof(float));
+    cudaMalloc(&d_output, (size_t)output_depth * OUTPUT_HT * OUTPUT_WD * sizeof(float));
 
-    //cudaMemcpy(d_input, input, (size_t)inp_depth * INPUT_HT * INPUT_WD *sizeof(float), cudaMemcpyHostToDevice);
-    //cudaMemcpy(d_kernel, kernel, (size_t)kernel_depth * (size_t)C_in * KERNEL_HT * KERNEL_WD * sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_input, input, (size_t)input_depth * INPUT_HT * INPUT_WD *sizeof(float), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_kernel, kernel, (size_t)kernel_depth * KERNEL_HT * KERNEL_WD * sizeof(float), cudaMemcpyHostToDevice);
 
-    //dim3 blockSize(16, 16, 1);
-    //dim3 gridSize((OUTPUT_WD + blockSize.x - 1) / blockSize.x, 
-    //              (OUTPUT_HT + blockSize.y - 1) / blockSize.y, C_out);
+    dim3 blockSize(8, 8, 4);
+    dim3 gridSize((OUTPUT_WD + blockSize.x - 1) / blockSize.x, 
+                  (OUTPUT_HT + blockSize.y - 1) / blockSize.y, 
+                  (output_depth + blockSize.z - 1) / blockSize.z);
 
     // Launch the convolution kernel
-    //conv2d<<<gridSize, blockSize>>>(d_input, d_kernel, d_output, 
-    //                                INPUT_HT, INPUT_WD, KERNEL_HT, KERNEL_WD, OUTPUT_HT, OUTPUT_WD,
-    //                                C_in, C_out);
-    //cudaMemcpy(gpu_output, d_output, (size_t)C_out * OUTPUT_HT * OUTPUT_WD * sizeof(float), cudaMemcpyDeviceToHost);
-    //validate_outputs(cpu_output, gpu_output, 5); 
+    conv3d<<<gridSize, blockSize>>>(d_input, d_kernel, d_output, 
+                                    INPUT_HT, INPUT_WD, KERNEL_HT, KERNEL_WD, OUTPUT_HT, OUTPUT_WD,
+                                    input_depth, kernel_depth, output_depth);
+    cudaMemcpy(gpu_output, d_output, output_depth * OUTPUT_HT * OUTPUT_WD * sizeof(float), cudaMemcpyDeviceToHost);
+    validate_outputs(cpu_output, gpu_output, 5); 
 
-    conv3d_cpu(input, kernel, cpu_output);
-    validate_outputs(cpu_output, 5);
     free(input);
     free(kernel);
     free(cpu_output);
     free(gpu_output);
 
-    // cudaFree(d_input);
-    // cudaFree(d_kernel);
-    // cudaFree(d_output);
+    cudaFree(d_input);
+    cudaFree(d_kernel);
+    cudaFree(d_output);
     return 0;
 }
 
