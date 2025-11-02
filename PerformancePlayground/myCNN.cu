@@ -108,7 +108,7 @@ __global__ void conv2d(float *input, float* kernel, float* output,
         {
             for(int n = 0; n < KERNEL_WD; n++)
             {
-                int inp_idx = (c * INPUT_HT + out_y+m) * INPUT_WD + out_x+n;
+                int inp_idx = (c * INPUT_HT + out_y + m) * INPUT_WD + out_x+n;
                 int kern_idx = ((out_z * C_in + c) * KERNEL_HT + m) * KERNEL_WD + n;
                 sum += input[inp_idx] * kernel[kern_idx];
             }
