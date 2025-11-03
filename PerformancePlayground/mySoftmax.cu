@@ -119,7 +119,7 @@ int main()
     cudaMalloc(&d_output, sizeof(float) * N);
 
     cudaMemcpy(d_input, input, sizeof(float) * N, cudaMemcpyHostToDevice);
-    softmax_kernel<<<1, N, N * sizeof(float)>>>(d_input, d_output, N);
+    softmax_kernel<<<1, N, (N + 2) * sizeof(float)>>>(d_input, d_output, N);
     cudaDeviceSynchronize();
     cudaMemcpy(gpu_output, d_output, sizeof(float) * N, cudaMemcpyDeviceToHost);
 
