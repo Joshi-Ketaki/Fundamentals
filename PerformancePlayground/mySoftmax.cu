@@ -49,40 +49,49 @@ void softmax_cpu(float *input, float *output, int N, int max_val)
 
 __global__ void softmax_kernel(float* d_input, float* d_output, int N)
 {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    float sum = 0.0f;
+    int idx = threadIdx.x;
+    // Load inpt into shared memory
+    extern __shared__ float sh_mem[];
+    float *sh_input = sh_mem;
+    float *max_val = sh_mem + N;
+    float *sum = sh_mem + N + 1;
 
     if(idx < N)
-    {
-        // Load inpt into shared memory
-        extern __shared__ float sh_input[];
         sh_input[idx] = d_input[idx];
-        __syncthreads();
+    __syncthreads();
 
-        // Compute the max value
-        float max_val = sh_input[0];
+    // Compute the max value
+    if (threadIdx.x == 0)
+    {
+        *max_val = sh_input[0];
         for(int i = 0; i < N; i++)
         {
-            if(sh_input[i] > max_val)
-                max_val = sh_input[i];
+            if(sh_input[i] > *max_val)
+                *max_val = sh_input[i];
         }
-        __syncthreads();
-
-        // Compute exponentials
-        float e = expf(sh_input[idx] - max_val);
-        sh_input[idx] = e;
-        __syncthreads();
-
-        //Compute sum
-        for(int i = 0; i < N; i++)
-        {
-            sum += sh_input[i];
-        }
-        __syncthreads();
-
-        //Normalize
-        d_output[idx] = sh_input[idx] / sum;
     }
+    __syncthreads();
+
+    // Compute exponentials
+    float e = expf(sh_input[idx] - *max_val);
+    if(idx < N)
+        sh_input[idx] = e;
+    __syncthreads();
+
+    //Compute sum
+    if(threadIdx.x == 0)
+    {
+        *sum = 0.0f;
+        for(int i = 0; i < N; i++)
+        {
+            *sum += sh_input[i];
+        }
+    }
+    __syncthreads();
+
+    //Normalize
+    if(idx < N)
+        d_output[idx] = sh_input[idx] / *sum;
     
 }
 
@@ -110,9 +119,7 @@ int main()
     cudaMalloc(&d_output, sizeof(float) * N);
 
     cudaMemcpy(d_input, input, sizeof(float) * N, cudaMemcpyHostToDevice);
-    dim3 blockSize(256, 1, 1);
-    dim3 gridSize((N + blockSize.x - 1) / blockSize.x);
-    softmax_kernel<<<gridSize, blockSize>>>(d_input, d_output, N);
+    softmax_kernel<<<1, N, N * sizeof(float)>>>(d_input, d_output, N);
     cudaDeviceSynchronize();
     cudaMemcpy(gpu_output, d_output, sizeof(float) * N, cudaMemcpyDeviceToHost);
 
