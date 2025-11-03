@@ -58,7 +58,6 @@ __global__ void softmax_kernel(float* d_input, float* d_output, int N)
 
     if(idx < N)
         sh_input[idx] = d_input[idx];
-    __syncthreads();
 
     // Compute the max value
     if (threadIdx.x == 0)
@@ -76,7 +75,6 @@ __global__ void softmax_kernel(float* d_input, float* d_output, int N)
     float e = expf(sh_input[idx] - *max_val);
     if(idx < N)
         sh_input[idx] = e;
-    __syncthreads();
 
     //Compute sum
     if(threadIdx.x == 0)
