@@ -107,11 +107,71 @@ __global__ void layerNorm_kernel(float* X, float* Y, float* G, float* B, float* 
 
 }
 
+__global__ void layerNorm_optimized_kernel(float* X, float*Y, float*G, float*B, int batch_size, int feature_size)
+{
+    extern __shared__ float shared_mem[];
+    float* temp = shared_mem;
+
+    int batch = blockIdx.x;
+    int tid = threadIdx.x;
+    int stride = blockDim.x;
+    float epsilon = 1e-5;
+    // calc sum
+    float sum = 0.0f;
+    for(int i = tid; i < feature_size; i += blockDim.x)
+    {
+        sum += X[batch * feature_size + i];
+    }
+    if (tid < blockDim.x) temp[tid] = (tid < feature_size) ? sum : 0.0f;
+
+    // reduction and mean 
+    int activeThreads = 1;
+    while (activeThreads < feature_size) activeThreads <<= 1;
+    for(int i = activeThreads/2; i > 0; i >>= 1)
+    {
+        if (tid < i)
+            temp[tid] += temp[tid + i];
+        __syncthreads();
+
+    }
+    float mean = temp[0] / feature_size;
+
+    // calc var
+    float diff = 0.0f;
+    sum = 0.0f;
+    for(int i = tid; i < feature_size; i+=stride)
+    {
+        diff = X[batch * feature_size + i] - mean;
+        sum += diff * diff;
+    }
+    if (tid < blockDim.x) temp[tid] = (tid < feature_size) ? sum : 0.0f;
+
+    //reduction and mean
+    activeThreads = 1;
+    while (activeThreads < feature_size) activeThreads <<= 1;
+    for(int i = activeThreads/2; i > 0; i >>=1)
+    {
+        if (tid < i)
+            temp[tid] += temp[tid + i]; 
+        __syncthreads();
+    }
+    float var = temp[0] / feature_size;
+    
+    if (tid >= feature_size) return;
+    for(int i = tid; i < feature_size; i+=stride)
+    {
+        float x_hat = (X[batch * feature_size + i] - mean) / (sqrtf(var + epsilon));
+        float g = G ? G[i] : 1.0f;
+        float b = B ? B[i] : 0.0f;
+        Y[batch * feature_size + i] = x_hat * g + b;
+    }
+}
+
 int main()
 {
     // say batch size is 5 and feature size is 4
     // because leetgpu will not allow command line arg
-    int batch_size = 5, feature_size = 4;
+    int batch_size = 5, feature_size = 1024;
     int matSize = batch_size * feature_size;
     float *X = (float*)malloc(sizeof(float) * matSize);
     float *cpu_Y = (float*)malloc(sizeof(float) * matSize);
@@ -143,10 +203,13 @@ int main()
     cudaMemcpy(d_allMean, allMean, sizeof(float) * batch_size, cudaMemcpyHostToDevice);
     cudaMemcpy(d_allVar, allVar, sizeof(float) * batch_size, cudaMemcpyHostToDevice);
 
-    dim3 blockSize(32,32,1);
-    dim3 gridSize((feature_size + blockSize.x - 1)/blockSize.x,
-                  (batch_size + blockSize.y - 1)/blockSize.y, 1);
-    layerNorm_kernel<<<gridSize, blockSize>>>(d_X, d_Y, d_G, d_B, d_allMean, d_allVar, batch_size, feature_size);
+    //dim3 blockSize(256, 1, 1);
+    //dim3 gridSize((feature_size + blockSize.x - 1)/blockSize.x,
+    //              (batch_size + blockSize.y - 1)/blockSize.y, 1);
+    int blockSize = feature_size > 1024 ? 256 : feature_size;
+    int gridSize = batch_size;
+    size_t sharedMemSize = blockSize * sizeof(float);
+    layerNorm_optimized_kernel<<<gridSize, blockSize, sharedMemSize>>>(d_X, d_Y, d_G, d_B, batch_size, feature_size);
     cudaMemcpy(gpu_Y, d_Y, sizeof(float) * matSize, cudaMemcpyDeviceToHost);
     validate_outputs(cpu_Y, gpu_Y, 5);
 
