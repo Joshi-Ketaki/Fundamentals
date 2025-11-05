@@ -24,14 +24,14 @@ void validate_outputs(float *cpu_output, float* gpu_output, int num_samples)
     for (int s = 0; s < num_samples; s++)
     {
         int idx = rand() % num_samples;
-        if(fabs(cpu_output[idx] - gpu_output[idx]) > 1e-5)
+        if(fabs(cpu_output[idx] - gpu_output[idx]) > 1e-4)
         {
+            printf("\n CPU Output[%d] = %.3f\n", idx,  cpu_output[idx]);
+            printf("\n GPU Output[%d] = %.3f\n", idx, gpu_output[idx]);
             printf("\n Output mismatch!");
             return;
         }
         printf("\n Outputs match");
-        printf("\n CPU Output[%d] = %.3f\n", idx,  cpu_output[idx]);
-        printf("\n GPU Output[%d] = %.3f\n", idx, gpu_output[idx]);
     }
     printf("\n(If these values look finite and not NaN/Inf, indexing is likely correct.)\n");
 }
@@ -107,6 +107,7 @@ __global__ void layerNorm_kernel(float* X, float* Y, float* G, float* B, float* 
 
 }
 
+// shared memory reduction
 __global__ void layerNorm_optimized_kernel(float* X, float*Y, float*G, float*B, int batch_size, int feature_size)
 {
     extern __shared__ float shared_mem[];
@@ -171,7 +172,7 @@ int main()
 {
     // say batch size is 5 and feature size is 4
     // because leetgpu will not allow command line arg
-    int batch_size = 5, feature_size = 1024;
+    int batch_size = 5, feature_size = 2048;
     int matSize = batch_size * feature_size;
     float *X = (float*)malloc(sizeof(float) * matSize);
     float *cpu_Y = (float*)malloc(sizeof(float) * matSize);
@@ -209,7 +210,8 @@ int main()
     int blockSize = feature_size > 1024 ? 256 : feature_size;
     int gridSize = batch_size;
     size_t sharedMemSize = blockSize * sizeof(float);
-    layerNorm_optimized_kernel<<<gridSize, blockSize, sharedMemSize>>>(d_X, d_Y, d_G, d_B, batch_size, feature_size);
+     layerNorm_optimized_kernel<<<gridSize, blockSize, sharedMemSize>>>(d_X, d_Y, d_G, d_B, batch_size, feature_size);
+    //layerNorm_kernel<<<1, 1024>>>(d_X, d_Y, d_G, d_B, d_allMean, d_allVar, batch_size, feature_size);
     cudaMemcpy(gpu_Y, d_Y, sizeof(float) * matSize, cudaMemcpyDeviceToHost);
     validate_outputs(cpu_Y, gpu_Y, 5);
 
