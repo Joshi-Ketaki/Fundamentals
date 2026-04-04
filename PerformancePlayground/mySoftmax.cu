@@ -53,12 +53,12 @@ __global__ void softmax_kernel_simple(float* d_input, float* d_output, int N)
     // Load inpt into shared memory
     extern __shared__ float sh_mem[];
     float *sh_input = sh_mem;
-    float *max_val = sh_mem + N;
-    float *sum = sh_mem + N + 1;
+    float max_val = sh_mem + N;
+    float sum = sh_mem + N + 1;
 
     if(idx < N)
         sh_input[idx] = d_input[idx];
-
+    *sum = 0;
     __syncthreads();
 
     // Compute the max value
@@ -77,11 +77,12 @@ __global__ void softmax_kernel_simple(float* d_input, float* d_output, int N)
     float e = expf(sh_input[idx] - *max_val);
     if(idx < N)
         sh_input[idx] = e;
+    *sum += sh_input[idx];
 
     __syncthreads();
 
     //Compute sum
-    if(threadIdx.x == 0)
+    /*if(threadIdx.x == 0)
     {
         *sum = 0.0f;
         for(int i = 0; i < N; i++)
@@ -89,7 +90,7 @@ __global__ void softmax_kernel_simple(float* d_input, float* d_output, int N)
             *sum += sh_input[i];
         }
     }
-    __syncthreads();
+    __syncthreads();*/
 
     //Normalize
     if(idx < N)
